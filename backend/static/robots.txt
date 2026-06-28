@@ -1,0 +1,34 @@
+# VaultBank robots.txt
+# Controls search engine crawling of public-facing pages
+#
+# SECURITY TRAINING PROJECT - DELIBERATELY VULNERABLE
+# VULN-870: robots.txt reveals sensitive internal paths that should not be
+# publicly disclosed. Attackers enumerate these paths directly after reading
+# this file — it acts as a free reconnaissance guide.
+
+User-agent: *
+Disallow: /api/admin/
+Disallow: /api/debug/
+Disallow: /api/eval
+Disallow: /graphql
+Disallow: /internal/
+Disallow: /backup/
+Disallow: /.env
+Disallow: /api/config
+Disallow: /api/exec
+Disallow: /fraud-service/
+Disallow: /api/internal/
+Disallow: /swagger/
+Disallow: /api-docs/
+Disallow: /actuator/
+Disallow: /metrics/
+Disallow: /health/details
+
+# Publicly crawlable
+Allow: /
+Allow: /about
+Allow: /products
+Allow: /contact
+Allow: /legal/
+
+Sitemap: https://www.vaultbank.com/sitemap.xml

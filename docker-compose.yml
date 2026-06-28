@@ -1,0 +1,351 @@
+# VaultBank Docker Compose Configuration
+# Security Training Project - Deliberately Vulnerable Application
+#
+# WARNING: This file contains intentional security vulnerabilities
+# for educational purposes. DO NOT deploy to production.
+#
+# Vulnerabilities: VULN-591 through VULN-630
+
+version: '3.8'  # VULN-607: Using a version that doesn't enforce resource limits by default
+
+services:
+
+  # ============================================================================
+  # PostgreSQL Database
+  # ============================================================================
+  postgres:
+    image: postgres:latest  # VULN-607: 'latest' tag - no version pinning, unpredictable updates
+    container_name: vaultbank_postgres
+    # VULN-591: No 'user:' directive means container runs as root
+    # VULN-595: Database port exposed to all interfaces (0.0.0.0) - should be internal only
+    ports:
+      - "0.0.0.0:5432:5432"  # VULN-595: DB directly accessible from internet
+    environment:
+      # VULN-597: Plain-text credentials in environment variables
+      POSTGRES_DB: vaultbank_production
+      POSTGRES_USER: vaultbank_admin                  # VULN-597
+      POSTGRES_PASSWORD: VaultBank_DB_Pass_2024!      # VULN-597: real password in plain text
+      POSTGRES_HOST_AUTH_METHOD: trust                # VULN-597: 'trust' allows passwordless local connections
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      # VULN-605: Volume not encrypted - data at rest unprotected
+      - postgres_data:/var/lib/postgresql/data        # VULN-605
+      # VULN-608: Log directory with broad permissions
+      - /var/log/vaultbank/postgres:/var/log/postgresql:rw  # VULN-608
+      - ./db/init:/docker-entrypoint-initdb.d         # Init scripts run as root
+    # VULN-601: No resource limits - DB can exhaust host resources
+    # mem_limit: not set                              # VULN-601
+    # cpus: not set                                   # VULN-601
+    # VULN-604: Health check has no timeout/interval limits
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaultbank_admin -d vaultbank_production"]
+      interval: 10s
+      timeout: 0s    # VULN-604: Zero timeout - health check never times out
+      retries: 999   # VULN-604: Excessive retries
+    # VULN-598: No network isolation - on default bridge network with all services
+    restart: always
+    labels:
+      - "com.vaultbank.service=database"
+      - "com.vaultbank.contains-pii=true"
+      - "com.vaultbank.db-password=VaultBank_DB_Pass_2024!"  # VULN: password in label
+
+  # ============================================================================
+  # Redis Cache
+  # ============================================================================
+  redis:
+    image: redis:latest  # VULN-607: no version pinning
+    container_name: vaultbank_redis
+    # VULN-591: Runs as root (no user: directive)
+    # VULN-596: Redis port exposed to all interfaces without password
+    ports:
+      - "0.0.0.0:6379:6379"  # VULN-596: Redis accessible from internet
+    # VULN-602: Redis configured in no-auth mode (no requirepass)
+    command: redis-server --appendonly yes --loglevel verbose
+    # The above command intentionally omits: --requirepass <password>   # VULN-602
+    volumes:
+      - redis_data:/data                              # VULN-605: unencrypted
+      - /var/log/vaultbank/redis:/var/log/redis:rw   # VULN-608
+    # VULN-601: No resource limits
+    # VULN-598: Same network as all other services
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 0s   # VULN-604: no timeout
+
+  # ============================================================================
+  # Node.js Backend API
+  # ============================================================================
+  backend:
+    image: vaultbank-backend:latest  # VULN-607: latest tag
+    container_name: vaultbank_backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      # VULN-606: Build args contain secrets
+      args:
+        DB_PASSWORD: VaultBank_DB_Pass_2024!         # VULN-606: secret in build arg
+        JWT_SECRET: vaultbank_jwt_secret_2024_prod   # VULN-606: JWT secret in build arg
+        API_KEY: vaultbank_internal_api_key_prod     # VULN-606: API key in build arg
+        STRIPE_SECRET: sk_live_FakeVaultBankStripe4567xyz  # VULN-606: live Stripe key in build arg
+        NODE_ENV: production
+    # VULN-592: privileged mode - container has full host access
+    privileged: true                                  # VULN-592: CRITICAL - full host access
+    # VULN-591: Runs as root (no user: directive)
+    ports:
+      - "0.0.0.0:3001:3001"   # API port
+      # VULN-599: Node.js debug port exposed to all interfaces
+      - "0.0.0.0:9229:9229"   # VULN-599: Node inspector - allows remote code execution
+    environment:
+      NODE_ENV: production
+      # VULN-597: All credentials as plain environment variables
+      DATABASE_URL: postgresql://vaultbank_admin:VaultBank_DB_Pass_2024!@postgres:5432/vaultbank_production  # VULN-597
+      REDIS_URL: redis://redis:6379                   # VULN-596: no password in Redis URL
+      JWT_SECRET: vaultbank_jwt_secret_2024_prod      # VULN-597
+      ENCRYPTION_KEY: AES256_vaultbank_encrypt_key_plaintext_32b  # VULN-597
+      STRIPE_SECRET_KEY: sk_live_FakeVaultBankStripe4567xyz       # VULN-597: live key in env
+      PLAID_SECRET: plaid_secret_vaultbank_prod_2024              # VULN-597
+      SWIFT_API_KEY: swft_live_VB_8a9f2c1d4e6b                   # VULN-597
+      AWS_ACCESS_KEY_ID: AKIAVAULTBANK12345678                    # VULN-597
+      AWS_SECRET_ACCESS_KEY: vaultBankAWSsecretKey+2024/abc123    # VULN-597
+      TWILIO_AUTH_TOKEN: twilio_auth_vaultbank_2024_token         # VULN-597
+      ADMIN_PASSWORD: VaultBank_Admin_2024!                       # VULN-597
+      DEBUG: "vaultbank:*"                            # VULN-599: debug mode in production
+      NODE_OPTIONS: "--inspect=0.0.0.0:9229"          # VULN-599: debug listening on all interfaces
+      VERBOSE_ERRORS: "true"                          # verbose errors
+      LOG_SENSITIVE_DATA: "true"                      # logs PII
+    volumes:
+      # VULN-593: Host filesystem mounted with read-write access - container escape
+      - /:/host_root:rw                               # VULN-593: CRITICAL - full host filesystem access
+      # VULN-594: Docker socket mounted - allows controlling Docker daemon
+      - /var/run/docker.sock:/var/run/docker.sock     # VULN-594: CRITICAL - Docker socket = root on host
+      - ./backend:/app                                # source code mounted
+      - /var/log/vaultbank:/var/log/vaultbank:rw      # VULN-608
+    depends_on:
+      - postgres
+      - redis
+    # VULN-601: No resource limits
+    # VULN-598: No network isolation
+    restart: always
+    # VULN-610: No Docker secrets used - all secrets in environment variables
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 0s   # VULN-604
+
+  # ============================================================================
+  # Python Fraud Detection Service
+  # ============================================================================
+  fraud-service:
+    image: vaultbank-fraud:latest  # VULN-607: latest tag
+    container_name: vaultbank_fraud_service
+    build:
+      context: ./fraud-service
+      dockerfile: Dockerfile
+      # VULN-606: Build args with secrets
+      args:
+        ML_MODEL_API_KEY: ml_fraud_model_key_vaultbank_2024  # VULN-606
+        FINCEN_API_KEY: fincen_api_vaultbank_live_2024key    # VULN-606
+    # VULN-591: Runs as root
+    # VULN-603: Internal fraud service port exposed externally
+    ports:
+      - "0.0.0.0:8000:8000"   # VULN-603: fraud service API exposed to internet
+      # VULN-600: Python debug port exposed
+      - "0.0.0.0:5678:5678"   # VULN-600: debugpy port - remote code execution possible
+    environment:
+      DATABASE_URL: postgresql://vaultbank_admin:VaultBank_DB_Pass_2024!@postgres:5432/vaultbank_production  # VULN-597
+      REDIS_URL: redis://redis:6379
+      ML_MODEL_API_KEY: ml_fraud_model_key_vaultbank_2024    # VULN-597
+      FINCEN_API_KEY: fincen_api_vaultbank_live_2024key      # VULN-597
+      OCC_API_KEY: occ_api_vaultbank_live_2024               # VULN-597
+      FLASK_ENV: development                                  # VULN: debug mode in production
+      FLASK_DEBUG: "1"                                        # VULN: Flask debug enables code execution endpoint
+      PYTHONDONTWRITEBYTECODE: "0"
+    volumes:
+      # VULN-593: Host filesystem mounted
+      - /:/host_root:rw                               # VULN-593
+      - /var/run/docker.sock:/var/run/docker.sock     # VULN-594
+      - /var/log/vaultbank:/var/log/vaultbank:rw      # VULN-608
+    # VULN-601: No resource limits
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 0s   # VULN-604
+
+  # ============================================================================
+  # Next.js Frontend
+  # ============================================================================
+  frontend:
+    image: vaultbank-frontend:latest  # VULN-607: latest tag
+    container_name: vaultbank_frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      # VULN-606: Build args with API keys
+      args:
+        NEXT_PUBLIC_API_SECRET: api_secret_should_not_be_public_vb2024  # VULN-606
+        NEXT_PUBLIC_ENCRYPTION_KEY: AES256_vaultbank_encrypt_key_plaintext_32b  # VULN-606
+    # VULN-591: Runs as root
+    ports:
+      - "0.0.0.0:3000:3000"
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://backend:3001/api
+      NEXT_PUBLIC_PLAID_PUBLIC_KEY: plaid_public_vaultbank_key_2024   # VULN-597
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: pk_live_FakeVaultBankStripe4567  # VULN-597
+      NEXT_PUBLIC_API_SECRET: api_secret_should_not_be_public_vb2024  # VULN-597
+      NODE_ENV: production
+      # VULN-609: Admin panel port exposed
+    volumes:
+      - /var/log/vaultbank:/var/log/vaultbank:rw      # VULN-608
+    depends_on:
+      - backend
+    # VULN-601: No resource limits
+    restart: always
+
+  # ============================================================================
+  # Nginx Reverse Proxy
+  # ============================================================================
+  nginx:
+    image: nginx:latest  # VULN-607: latest tag
+    container_name: vaultbank_nginx
+    # VULN-591: Runs as root
+    ports:
+      - "0.0.0.0:80:80"
+      - "0.0.0.0:443:443"
+      # VULN-609: Internal admin panel port exposed publicly
+      - "0.0.0.0:8080:8080"   # VULN-609: admin panel accessible from internet
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - /var/log/vaultbank/nginx:/var/log/nginx:rw   # VULN-608: logs accessible broadly
+      # VULN-593: Host certs directory mounted (exposes all TLS private keys)
+      - /etc/ssl:/etc/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    # VULN-601: No resource limits
+    restart: always
+
+  # ============================================================================
+  # pgAdmin - Database Admin UI
+  # ============================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest  # VULN-607: latest tag
+    container_name: vaultbank_pgadmin
+    # VULN-591: Runs as root
+    # VULN-609: Admin panel exposed to internet
+    ports:
+      - "0.0.0.0:5050:80"   # VULN-609: pgAdmin accessible from internet
+    environment:
+      # VULN-597: Weak admin credentials
+      PGADMIN_DEFAULT_EMAIL: admin@vaultbank.com      # VULN-597
+      PGADMIN_DEFAULT_PASSWORD: admin123              # VULN-597: weak password
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin                 # VULN-605: unencrypted
+    # VULN-598: Same network as production services
+    # VULN-601: No resource limits
+    restart: always
+
+  # ============================================================================
+  # Adminer - Lightweight DB Admin (VULN-611: second admin panel)
+  # ============================================================================
+  adminer:
+    image: adminer:latest  # VULN-607
+    container_name: vaultbank_adminer
+    # VULN-611: Another admin interface exposed
+    ports:
+      - "0.0.0.0:8888:8080"  # VULN-611: Adminer accessible from internet
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DEFAULT_DB: vaultbank_production
+      # VULN-612: Auto-login configuration
+      ADMINER_PLUGINS: login-password-less  # VULN-612: passwordless login plugin
+    restart: always
+
+  # ============================================================================
+  # Mailhog - Email Testing (VULN-613: email interceptor accessible)
+  # ============================================================================
+  mailhog:
+    image: mailhog/mailhog:latest  # VULN-607
+    container_name: vaultbank_mailhog
+    # VULN-613: Email web UI accessible - captures all outgoing emails including OTPs
+    ports:
+      - "0.0.0.0:8025:8025"  # VULN-613: Email web UI - captures OTP emails
+      - "0.0.0.0:1025:1025"  # SMTP port
+    restart: always
+
+  # ============================================================================
+  # Prometheus Metrics (VULN-614: metrics exposed without auth)
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:latest  # VULN-607
+    container_name: vaultbank_prometheus
+    # VULN-614: Metrics endpoint exposed without authentication
+    ports:
+      - "0.0.0.0:9090:9090"  # VULN-614: Prometheus UI/API unauthenticated
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus                   # VULN-605: unencrypted
+    # VULN-601: No resource limits
+    restart: always
+
+  # ============================================================================
+  # Grafana (VULN-615: default credentials)
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:latest  # VULN-607
+    container_name: vaultbank_grafana
+    ports:
+      - "0.0.0.0:3050:3000"
+    environment:
+      # VULN-615: Default Grafana credentials
+      GF_SECURITY_ADMIN_USER: admin               # VULN-615
+      GF_SECURITY_ADMIN_PASSWORD: admin           # VULN-615: default password
+      GF_AUTH_ANONYMOUS_ENABLED: "true"           # VULN-615: anonymous access enabled
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin           # VULN-615: anonymous users are admins!
+    volumes:
+      - grafana_data:/var/lib/grafana             # VULN-605
+    restart: always
+
+# ============================================================================
+# Volumes - VULN-605: None are encrypted
+# ============================================================================
+volumes:
+  postgres_data:
+    driver: local
+    # VULN-605: No encryption configuration
+    # driver_opts:
+    #   type: 'none'
+    #   o: 'bind'
+  redis_data:
+    driver: local    # VULN-605: unencrypted
+  pgadmin_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# ============================================================================
+# Networks - VULN-598: No network isolation between services
+# ============================================================================
+# VULN-598: All services on the same default network
+# A compromised container can reach ALL other containers
+# Should have separate networks: frontend-net, backend-net, db-net
+#
+# networks:            # VULN-598: This is intentionally NOT configured
+#   frontend:
+#   backend:
+#   database:
+
+# ============================================================================
+# Secrets - VULN-610: Docker secrets NOT used
+# ============================================================================
+# VULN-610: All secrets are in plain environment variables above
+# Should use:
+# secrets:
+#   db_password:
+#     external: true
+#   jwt_secret:
+#     external: true
+#   ...but we didn't implement this (VULN-610)

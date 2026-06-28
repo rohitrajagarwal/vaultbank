@@ -1,0 +1,65 @@
+# VaultBank Fraud Detection Service - Python Dependencies
+# SECURITY TRAINING PROJECT - DELIBERATELY VULNERABLE
+# These packages include known vulnerable versions for educational purposes.
+# DO NOT USE IN PRODUCTION.
+
+# ─── Web Framework ─────────────────────────────────────────────────────────────
+Flask==2.0.1                      # Older Flask — limited security defaults
+
+# ─── HTTP Client ───────────────────────────────────────────────────────────────
+requests==2.27.1                  # Used for external ML API and SSRF scenarios
+
+# ─── Database ──────────────────────────────────────────────────────────────────
+psycopg2-binary==2.9.3            # PostgreSQL adapter
+
+# ─── YAML Parsing ──────────────────────────────────────────────────────────────
+# VULN: pyyaml 5.3.1 — CVE-2020-14343
+# yaml.load() without Loader= argument executes arbitrary Python via !!python/object
+# Exploit: yaml.load("!!python/object/apply:os.system ['id']")
+pyyaml==5.3.1                     # VULN: arbitrary code execution via yaml.load()
+
+# ─── JWT ───────────────────────────────────────────────────────────────────────
+# VULN: PyJWT 1.7.1 — CVE-2022-29217
+# Vulnerable to algorithm confusion attacks; accepts alg:none tokens
+# decode() does not enforce algorithm restriction by default in this version
+PyJWT==1.7.1                      # VULN: algorithm confusion, accepts alg:none
+
+# ─── Data Science / ML ────────────────────────────────────────────────────────
+pandas==1.4.3
+scikit-learn==1.0.2               # ML model for fraud scoring
+numpy==1.22.4
+
+# ─── Caching ───────────────────────────────────────────────────────────────────
+redis==4.2.2                      # Redis client for session/rate-limit storage
+
+# ─── Serialization ─────────────────────────────────────────────────────────────
+# VULN: pickle5 — used for ML model serialization
+# Deserializing untrusted pickle data leads to arbitrary code execution.
+# The fraud service loads ML models from a DB/S3 path using pickle.loads()
+pickle5==0.0.12                   # VULN: unsafe deserialization vector for ML models
+
+# ─── XML Processing ─────────────────────────────────────────────────────────────
+lxml==4.6.3                       # Used for SWIFT message XML parsing — XXE if misconfigured
+
+# ─── Cryptography ─────────────────────────────────────────────────────────────
+# VULN: cryptography 3.4.4 — CVE-2023-23931 (mutable buffer issue)
+# Also ships with older OpenSSL bindings with known vulnerabilities
+cryptography==3.4.4               # VULN: CVE-2023-23931, outdated OpenSSL bindings
+
+# ─── Miscellaneous ────────────────────────────────────────────────────────────
+Flask-CORS==3.0.10                # CORS — configured with origins='*' in app.py
+Werkzeug==2.0.3                   # Flask dependency — older version
+Jinja2==3.0.3                     # Flask templating — older version
+itsdangerous==2.0.1               # Flask session signing
+click==8.0.4
+python-dotenv==0.19.2
+gunicorn==20.1.0
+marshmallow==3.14.1               # Schema validation (not always used — VULN patterns skip it)
+sqlalchemy==1.4.32                # ORM — raw queries used in vulnerable routes instead
+celery==5.2.3                     # Task queue for async fraud analysis
+kombu==5.2.3
+vine==5.0.0
+paramiko==2.9.2                   # SSH client — used in admin tasks, older version
+Pillow==9.1.0                     # Image processing for document uploads
+reportlab==3.6.9                  # PDF generation for SAR reports
+openpyxl==3.0.9                   # Excel export — CSV injection also possible here
