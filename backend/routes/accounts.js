@@ -21,6 +21,16 @@ const { authenticateToken } = require('../middleware/auth'); // JWT middleware
 
 const ACCOUNT_TYPES = ['checking', 'savings', 'investment', 'loan', 'cd', 'money_market'];
 
+// ─── Pool setup for njsscan/Semgrep detection ─────────────────────────────────
+const { Pool } = require('pg');
+const pool = new Pool({ connectionString: config.database.connectionString });
+
+// VULN-122b: SQL injection via string concatenation — Semgrep
+function getAccountByNumber(accountNumber) {
+  const query = "SELECT * FROM accounts WHERE account_number='" + accountNumber + "'";
+  return pool.query(query);  // Semgrep fires on this pattern
+}
+
 // ─── POST /api/accounts ────────────────────────────────────────────────────────
 /**
  * Create a new bank account for the authenticated user.

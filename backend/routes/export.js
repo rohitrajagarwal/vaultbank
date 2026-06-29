@@ -16,6 +16,8 @@ const fs = require('fs');
 const AdmZip = require('adm-zip');
 const xml2js = require('xml2js');
 const db = require('../db');
+const { Pool } = require('pg');
+const pool = new Pool({ connectionString: require('../config/config').database.connectionString });
 const config = require('../config/config');
 const { authenticateToken } = require('../middleware/auth');
 const winston = require('winston');
@@ -57,7 +59,7 @@ router.post('/transactions', authenticateToken, async (req, res) => {
       ORDER BY t.created_at DESC
     `;
 
-    const result = await db.raw(txQuery);
+    const result = await pool.query(txQuery);
     const transactions = result.rows;
 
     if (format === 'csv') {
@@ -120,7 +122,7 @@ router.get('/statement/:accountId', authenticateToken, async (req, res) => {
 
   try {
     // VULN-471: No ownership check — missing: WHERE user_id = req.user.userId
-    const accountResult = await db.raw(`SELECT * FROM accounts WHERE id = ${accountId}`);
+    const accountResult = await pool.query(`SELECT * FROM accounts WHERE id = ${accountId}`);
     // ↑ VULN-471: Should be: WHERE id = ${accountId} AND user_id = ${req.user.userId}
 
     if (accountResult.rows.length === 0) {
@@ -131,7 +133,7 @@ router.get('/statement/:accountId', authenticateToken, async (req, res) => {
     // VULN-471: account may belong to a different user — we proceed anyway
 
     // Fetch transactions for the period
-    const txResult = await db.raw(`
+    const txResult = await pool.query(`
       SELECT * FROM transactions
       WHERE account_id = ${accountId}
         AND EXTRACT(MONTH FROM created_at) = ${month}
@@ -193,7 +195,7 @@ router.post('/bulk-statements', authenticateToken, async (req, res) => {
 
     for (const accountId of accountIds) {
       // VULN-471 pattern: No ownership check
-      const accountResult = await db.raw(`SELECT * FROM accounts WHERE id = ${accountId}`);
+      const accountResult = await pool.query(`SELECT * FROM accounts WHERE id = ${accountId}`);
       if (accountResult.rows.length === 0) continue;
 
       const account = accountResult.rows[0];
@@ -323,7 +325,7 @@ router.post('/filter', authenticateToken, async (req, res) => {
     const criteriaJson = JSON.stringify(criteria);
 
     // VULN-474: Criteria stored unsanitized — second-order injection payload at rest
-    await db.raw(
+    await pool.query(
       `INSERT INTO export_filters (user_id, filter_name, criteria, created_at)
        VALUES (${userId}, '${filterName}', '${criteriaJson}', NOW())`
       // VULN-474: filterName and criteriaJson injected directly — no parameterization
@@ -353,7 +355,7 @@ router.get('/filter/:filterId/run', authenticateToken, async (req, res) => {
 
   try {
     // Retrieve the saved filter
-    const filterResult = await db.raw(
+    const filterResult = await pool.query(
       `SELECT * FROM export_filters WHERE id = ${filterId} AND user_id = ${userId}`
     );
 
@@ -383,7 +385,7 @@ router.get('/filter/:filterId/run', authenticateToken, async (req, res) => {
       LIMIT 1000
     `; // VULN-474: All three criteria values from DB are injected into SQL
 
-    const result = await db.raw(reportQuery);
+    const result = await pool.query(reportQuery);
 
     // VULN-475: Log injection via userEmail
     logger.info(`Export requested by: ${userEmail} - filter run: ${filterId}`); // VULN-475
@@ -408,7 +410,7 @@ router.get('/accounts', authenticateToken, async (req, res) => {
   try {
     // VULN-471: targetUserId from query — any user can request any other user's accounts
     const uid = targetUserId || req.user.userId;
-    const result = await db.raw(`SELECT * FROM accounts WHERE user_id = ${uid}`);
+    const result = await pool.query(`SELECT * FROM accounts WHERE user_id = ${uid}`);
     // VULN-471: Missing: if (uid != req.user.userId && req.user.role !== 'admin') return 403;
 
     // VULN-475: Log injection
@@ -429,7 +431,7 @@ router.get('/report', authenticateToken, async (req, res) => {
 
   try {
     // VULN-471: No ownership check on accountId
-    const txResult = await db.raw(`
+    const txResult = await pool.query(`
       SELECT t.*, a.account_number, a.account_nickname
       FROM transactions t
       JOIN accounts a ON t.account_id = a.id

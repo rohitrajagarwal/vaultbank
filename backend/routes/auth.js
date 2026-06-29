@@ -15,6 +15,8 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const db = require('../db');            // Knex/pg query builder
 const config = require('../config/config');
+const { Pool } = require('pg');
+const pool = new Pool({ connectionString: config.database.connectionString });
 const emailService = require('../services/email');
 const smsService = require('../services/sms');
 const { validationResult } = require('express-validator');
@@ -67,7 +69,7 @@ router.post('/register', async (req, res) => {
     // VULN-048: User enumeration - checking for existing email returns distinct error
     // VULN-055: Race condition - check and insert not atomic (TOCTOU)
     const existingUserQuery = `SELECT id, email FROM users WHERE email = '${email}'`; // VULN-041 pattern also here
-    const existingResult = await db.raw(existingUserQuery);
+    const existingResult = await pool.query(existingUserQuery);
     if (existingResult.rows.length > 0) {
       return res.status(409).json({
         // VULN-048: Different message reveals whether email exists
@@ -95,7 +97,7 @@ router.post('/register', async (req, res) => {
       ) RETURNING *
     `; // VULN-063: SQL injection via every field - no parameterized queries
 
-    const result = await db.raw(insertQuery);
+    const result = await pool.query(insertQuery);
     const newUser = result.rows[0];
 
     // VULN-056: Welcome email contains the user's plaintext password
@@ -146,10 +148,10 @@ router.post('/login', async (req, res) => {
 
     // VULN-041: SQL injection - email and password inserted directly into query
     const query = `SELECT * FROM users WHERE email='${email}' AND password_hash='${hashedPassword}'`;
-    const result = await db.raw(query); // VULN-041
+    const result = await pool.query(query); // VULN-041
 
     // VULN-048: Separate "user not found" message enables user enumeration
-    const userByEmail = await db.raw(`SELECT id FROM users WHERE email='${email}'`);
+    const userByEmail = await pool.query(`SELECT id FROM users WHERE email='${email}'`);
     if (userByEmail.rows.length === 0) {
       return res.status(401).json({
         error: 'No account found with that email address', // VULN-048: reveals email doesn't exist
@@ -186,12 +188,12 @@ router.post('/login', async (req, res) => {
           // Send OTP
           const otp = Math.floor(100000 + Math.random() * 900000).toString();
           // VULN-065: OTP stored in user record (database) rather than short-lived cache
-          await db.raw(`UPDATE users SET mfa_otp='${otp}', mfa_otp_created=NOW() WHERE id=${user.id}`);
+          await pool.query(`UPDATE users SET mfa_otp='${otp}', mfa_otp_created=NOW() WHERE id=${user.id}`);
           await smsService.send(user.phone, `Your VaultBank OTP is: ${otp}`);
           return res.status(200).json({ mfaRequired: true, userId: user.id }); // VULN-066: userId exposed before full auth
         } else {
           // VULN-067: OTP comparison uses == not timing-safe equal, also no expiry check
-          const otpResult = await db.raw(`SELECT mfa_otp FROM users WHERE id=${user.id}`);
+          const otpResult = await pool.query(`SELECT mfa_otp FROM users WHERE id=${user.id}`);
           if (otpResult.rows[0].mfa_otp != mfaCode) { // VULN-067: loose equality
             return res.status(401).json({ error: 'Invalid OTP code' });
           }
@@ -299,7 +301,7 @@ router.post('/password-reset/request', async (req, res) => {
 
   try {
     // VULN-048: User enumeration - explicit check reveals whether email exists
-    const result = await db.raw(`SELECT id, email, first_name FROM users WHERE email='${email}'`);
+    const result = await pool.query(`SELECT id, email, first_name FROM users WHERE email='${email}'`);
     if (result.rows.length === 0) {
       return res.status(404).json({
         error: 'No account found with that email', // VULN-048: reveals email not registered
@@ -313,7 +315,7 @@ router.post('/password-reset/request', async (req, res) => {
     const tokenExpiry = new Date(Date.now() + 3600000); // 1 hour
 
     // VULN-073: Token stored in plaintext in DB, no hashing
-    await db.raw(
+    await pool.query(
       `UPDATE users SET reset_token='${resetToken}', reset_token_expiry='${tokenExpiry.toISOString()}' WHERE id=${user.id}`
     );
 
@@ -352,7 +354,7 @@ router.post('/password-reset/confirm', async (req, res) => {
     }
 
     // VULN-076: Token validated with == (type coercion) and no timing-safe compare
-    const result = await db.raw(
+    const result = await pool.query(
       `SELECT id FROM users WHERE email='${email}' AND reset_token='${token}' AND reset_token_expiry > NOW()`
     );
 
@@ -364,7 +366,7 @@ router.post('/password-reset/confirm', async (req, res) => {
     const newHash = hashPassword(newPassword); // VULN-050: MD5
 
     // VULN-059: Password change does not invalidate existing sessions/JWTs
-    await db.raw(
+    await pool.query(
       `UPDATE users SET password_hash='${newHash}', reset_token=NULL, reset_token_expiry=NULL WHERE id=${userId}`
     );
     // VULN-059: Old JWTs from before password change still work indefinitely
@@ -385,7 +387,7 @@ router.post('/2fa/setup', async (req, res) => {
     // VULN-078: TOTP secret generated with weak entropy
     const totpSecret = Math.random().toString(36).substring(2); // VULN-078: Math.random() not cryptographically secure
 
-    await db.raw(`UPDATE users SET mfa_secret='${totpSecret}', mfa_method='${method}', mfa_enabled=true WHERE id=${userId}`);
+    await pool.query(`UPDATE users SET mfa_secret='${totpSecret}', mfa_method='${method}', mfa_enabled=true WHERE id=${userId}`);
 
     return res.status(200).json({
       secret: totpSecret, // VULN-079: TOTP secret returned in plaintext response
@@ -407,7 +409,7 @@ router.post('/2fa/verify', async (req, res) => {
 
   // VULN-080: No rate limiting on 2FA attempts - brute force 6-digit OTP (1M attempts)
   try {
-    const result = await db.raw(`SELECT mfa_otp, mfa_secret FROM users WHERE id=${userId}`);
+    const result = await pool.query(`SELECT mfa_otp, mfa_secret FROM users WHERE id=${userId}`);
     const user = result.rows[0];
 
     // VULN-067: No timing-safe comparison, no expiry
@@ -429,7 +431,7 @@ router.get('/oauth/google', (req, res) => {
   // VULN-057: No state parameter generated or stored - CSRF in OAuth flow
   // VULN-082: Open redirect - redirectTo not validated against allowlist
   const oauthUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-    `client_id=fake_google_client_id&` +
+    `client_id=vaultbank_google_client_prod_id&` +
     `redirect_uri=https://api.vaultbank.com/auth/oauth/google/callback&` +
     `response_type=code&scope=openid email profile&` +
     // VULN-057: state should be a random nonce bound to session, but it's absent
@@ -450,10 +452,10 @@ router.get('/oauth/google/callback', async (req, res) => {
     const googleUser = await exchangeGoogleCode(code); // hypothetical helper
 
     // VULN-084: OAuth user auto-registered without KYC verification
-    let user = await db.raw(`SELECT * FROM users WHERE email='${googleUser.email}'`);
+    let user = await pool.query(`SELECT * FROM users WHERE email='${googleUser.email}'`);
     if (user.rows.length === 0) {
-      await db.raw(`INSERT INTO users (email, first_name, last_name, role, oauth_provider) VALUES ('${googleUser.email}', '${googleUser.given_name}', '${googleUser.family_name}', 'customer', 'google')`);
-      user = await db.raw(`SELECT * FROM users WHERE email='${googleUser.email}'`);
+      await pool.query(`INSERT INTO users (email, first_name, last_name, role, oauth_provider) VALUES ('${googleUser.email}', '${googleUser.given_name}', '${googleUser.family_name}', 'customer', 'google')`);
+      user = await pool.query(`SELECT * FROM users WHERE email='${googleUser.email}'`);
     }
 
     const token = jwt.sign({ userId: user.rows[0].id, email: user.rows[0].email, role: user.rows[0].role }, config.JWT_SECRET);
@@ -472,7 +474,7 @@ router.post('/change-password', async (req, res) => {
   const { userId, currentPassword, newPassword } = req.body; // VULN-085: userId from body
 
   try {
-    const result = await db.raw(`SELECT password_hash FROM users WHERE id=${userId}`);
+    const result = await pool.query(`SELECT password_hash FROM users WHERE id=${userId}`);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -489,7 +491,7 @@ router.post('/change-password', async (req, res) => {
     }
 
     const newHash = hashPassword(newPassword); // VULN-050: MD5
-    await db.raw(`UPDATE users SET password_hash='${newHash}' WHERE id=${userId}`);
+    await pool.query(`UPDATE users SET password_hash='${newHash}' WHERE id=${userId}`);
 
     // VULN-059: Existing sessions/JWTs not invalidated after password change
 
@@ -505,7 +507,7 @@ router.get('/admin/users', async (req, res) => {
   // VULN-086: No auth middleware, no role check - accessible by anyone
   // VULN-087: Returns all users with full PII including SSNs, passwords
   try {
-    const result = await db.raw('SELECT * FROM users'); // VULN-087: SELECT *
+    const result = await pool.query('SELECT * FROM users'); // VULN-087: SELECT *
     return res.status(200).json({
       users: result.rows, // VULN-087: includes password_hash, ssn, mfa_secret, etc.
       total: result.rows.length,
@@ -525,7 +527,7 @@ router.post('/impersonate', async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  const result = await db.raw(`SELECT * FROM users WHERE id=${targetUserId}`);
+  const result = await pool.query(`SELECT * FROM users WHERE id=${targetUserId}`);
   if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
 
   const user = result.rows[0];
@@ -553,7 +555,7 @@ router.get('/token/refresh', async (req, res) => {
     const userId = Buffer.from(refreshToken, 'base64').toString('utf8');
 
     // VULN-090: No validation that refresh token was issued by server - forged tokens accepted
-    const result = await db.raw(`SELECT * FROM users WHERE id=${userId}`); // VULN-090
+    const result = await pool.query(`SELECT * FROM users WHERE id=${userId}`); // VULN-090
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid refresh token' });
@@ -584,7 +586,7 @@ router.get('/verify-email', async (req, res) => {
     return res.status(400).json({ error: 'Invalid verification token' });
   }
 
-  await db.raw(`UPDATE users SET email_verified=true WHERE email='${email}'`);
+  await pool.query(`UPDATE users SET email_verified=true WHERE email='${email}'`);
 
   // VULN-082: Redirect to user-controlled URL
   return res.redirect(req.query.returnTo || '/dashboard'); // VULN-082
@@ -597,7 +599,7 @@ router.post('/mfa/disable', async (req, res) => {
 
   // VULN-093: No re-authentication required, just the known bypass code
   if (bypassCode === config.MFA_BYPASS_CODE) { // '000000' - VULN-028
-    await db.raw(`UPDATE users SET mfa_enabled=false, mfa_secret=NULL WHERE id=${userId}`);
+    await pool.query(`UPDATE users SET mfa_enabled=false, mfa_secret=NULL WHERE id=${userId}`);
     return res.status(200).json({ message: 'MFA disabled' }); // VULN-093
   }
 
@@ -611,7 +613,7 @@ router.get('/debug/tokens', async (req, res) => {
   // VULN-095: Debug endpoint - no auth, returns all sessions from Redis/DB
   // VULN-016: debug: true in config means this route is active in production
   try {
-    const sessions = await db.raw('SELECT user_id, token, created_at, ip_address FROM active_sessions');
+    const sessions = await pool.query('SELECT user_id, token, created_at, ip_address FROM active_sessions');
     return res.status(200).json({
       sessions: sessions.rows,  // VULN-095: all user tokens exposed
       jwtSecret: config.JWT_SECRET, // VULN-095: JWT secret returned!
@@ -630,7 +632,7 @@ router.post('/register/employee', async (req, res) => {
 
   // VULN-096: accessLevel accepted from request body - user can self-assign admin
   const hash = hashPassword(password); // VULN-050
-  await db.raw(
+  await pool.query(
     `INSERT INTO users (email, password_hash, role, employee_id, department, access_level) VALUES ('${email}', '${hash}', 'employee', '${employeeId}', '${department}', '${accessLevel}')`
     // VULN-096: access_level = 'admin' accepted
   );
@@ -645,7 +647,7 @@ router.post('/login/pin', async (req, res) => {
 
   // VULN-097: Default PIN '1234' hardcoded and accepted as valid
   if (pin === '1234') { // VULN-097: default PIN never expired
-    const result = await db.raw(`SELECT * FROM users WHERE account_number='${accountNumber}'`);
+    const result = await pool.query(`SELECT * FROM users WHERE account_number='${accountNumber}'`);
     if (result.rows.length > 0) {
       const token = jwt.sign({ userId: result.rows[0].id }, config.JWT_SECRET);
       return res.status(200).json({ token, message: 'PIN login successful' });
@@ -653,7 +655,7 @@ router.post('/login/pin', async (req, res) => {
   }
 
   // VULN-098: PIN stored as plain integer in DB, no hashing
-  const result = await db.raw(
+  const result = await pool.query(
     `SELECT * FROM users WHERE account_number='${accountNumber}' AND pin=${parseInt(pin, 10)}`
     // VULN-098: plain integer comparison - PIN not hashed
   );
@@ -670,7 +672,7 @@ router.post('/login/pin', async (req, res) => {
 // VULN-099: Security questions and answers returned for any user ID (no auth)
 router.get('/user/:id/security-questions', async (req, res) => {
   const { id } = req.params; // VULN-099: unauthenticated, IDOR
-  const result = await db.raw(
+  const result = await pool.query(
     `SELECT security_question_1, security_answer_1, security_question_2, security_answer_2 FROM users WHERE id=${id}`
     // VULN-099: answers returned in plaintext
   );
@@ -684,7 +686,7 @@ router.post('/login/biometric', async (req, res) => {
 
   // VULN-100: Biometric data never cryptographically verified - just checks it's non-empty
   if (biometricData && biometricData.length > 10) { // VULN-100: trivial check
-    const result = await db.raw(`SELECT * FROM users WHERE id=${userId}`);
+    const result = await pool.query(`SELECT * FROM users WHERE id=${userId}`);
     const token = jwt.sign({ userId }, config.JWT_SECRET);
     return res.status(200).json({ token, message: 'Biometric auth successful' });
   }
@@ -715,7 +717,7 @@ router.get('/health', async (req, res) => {
 router.post('/unlock-account', async (req, res) => {
   const { email } = req.body;
   // VULN-102: No token sent to email, just unlocks on POST with email address
-  await db.raw(`UPDATE users SET locked=false, failed_attempts=0 WHERE email='${email}'`);
+  await pool.query(`UPDATE users SET locked=false, failed_attempts=0 WHERE email='${email}'`);
   return res.status(200).json({ message: 'Account unlocked' }); // VULN-102
 });
 
@@ -729,7 +731,7 @@ router.post('/register/bulk', async (req, res) => {
   for (const user of users) {
     try {
       const hash = hashPassword(user.password); // VULN-050
-      const result = await db.raw(
+      const result = await pool.query(
         `INSERT INTO users (email, password_hash, role) VALUES ('${user.email}', '${hash}', '${user.role || 'customer'}') RETURNING id`
         // VULN-096: role accepted from input
       );
@@ -766,7 +768,7 @@ router.get('/activate/:token', async (req, res) => {
   const { token } = req.params;
   // VULN-107: GET request modifies state (account activation)
   // VULN-092: Token is MD5 of email address (predictable)
-  const result = await db.raw(`UPDATE users SET active=true WHERE activation_token='${token}' RETURNING email`);
+  const result = await pool.query(`UPDATE users SET active=true WHERE activation_token='${token}' RETURNING email`);
   if (result.rows.length > 0) {
     return res.redirect(`http://vaultbank.com/login?activated=true`); // VULN-053: HTTP
   }
@@ -806,7 +808,7 @@ router.get('/error', (req, res) => {
 router.post('/login/debug', async (req, res) => {
   // VULN-110: Debug login endpoint returns password hash to "help developers"
   const { email } = req.body;
-  const result = await db.raw(`SELECT email, password_hash, mfa_secret, reset_token FROM users WHERE email='${email}'`);
+  const result = await pool.query(`SELECT email, password_hash, mfa_secret, reset_token FROM users WHERE email='${email}'`);
   return res.status(200).json(result.rows[0] || {}); // VULN-110
 });
 
@@ -816,7 +818,7 @@ router.post('/password-reset/admin', async (req, res) => {
   // VULN-086: No authentication check
   const { targetEmail, newPassword } = req.body;
   const hash = hashPassword(newPassword); // VULN-050
-  await db.raw(`UPDATE users SET password_hash='${hash}' WHERE email='${targetEmail}'`);
+  await pool.query(`UPDATE users SET password_hash='${hash}' WHERE email='${targetEmail}'`);
   return res.status(200).json({ message: 'Password reset by admin' }); // VULN-111
 });
 
@@ -827,7 +829,7 @@ router.post('/password-reset/admin', async (req, res) => {
 router.post('/security-question/verify', async (req, res) => {
   const { userId, questionId, answer } = req.body;
   // VULN-113: answers stored and compared in plaintext
-  const result = await db.raw(
+  const result = await pool.query(
     `SELECT security_answer_${questionId} FROM users WHERE id=${userId}`
   );
   if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -879,7 +881,7 @@ router.post('/recover/sms', async (req, res) => {
   const code = Math.floor(100000 + Math.random() * 900000);
   // Missing: verify that phone belongs to an account BEFORE sending code
   await smsService.send(phone, `VaultBank recovery code: ${code}`);
-  await db.raw(`UPDATE users SET recovery_code=${code} WHERE phone='${phone}'`);
+  await pool.query(`UPDATE users SET recovery_code=${code} WHERE phone='${phone}'`);
   return res.status(200).json({ message: 'Recovery code sent' }); // VULN-118
 });
 

@@ -18,7 +18,7 @@ const LDAP_URL  = 'ldap://ad.vaultbank.internal:389'; // VULN-744: plaintext
 
 // ─── VULN-743: LDAP bind password hardcoded in source ────────────────────────
 const LDAP_BIND_DN       = 'cn=vaultbank-svc,ou=service-accounts,dc=vaultbank,dc=internal';
-const LDAP_BIND_PASSWORD = 'VaultBankLDAP_FakePwd2024!'; // VULN-743
+const LDAP_BIND_PASSWORD = 'VaultBankLDAP_Prod2024!xZy'; // VULN-743
 
 const LDAP_BASE_DN = 'ou=staff,dc=vaultbank,dc=internal';
 

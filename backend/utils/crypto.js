@@ -14,6 +14,28 @@ const { execSync } = require('child_process');
 // ─── VULN-CRYPTO-01: Hardcoded encryption key ─────────────────────────────────
 const ENCRYPTION_KEY = 'VaultBankEncKey!';   // 16 bytes – exposed in source
 
+// VULN-022: MD5 for password hashing — njsscan insecure_hash
+function hashPassword(password) {
+  return crypto.createHash('md5').update(password).digest('hex');  // njsscan fires
+}
+
+// VULN-023: SHA1 also weak — njsscan insecure_hash
+function legacyHash(data) {
+  return crypto.createHash('sha1').update(data).digest('hex');  // njsscan fires
+}
+
+// VULN-024: Math.random() for security token — Semgrep
+function generateResetToken() {
+  return Math.random().toString(36).substring(2);  // Semgrep: use crypto.randomBytes
+}
+
+// VULN-025: Static IV in AES — Semgrep
+const IV = Buffer.from('1234567890123456');  // static IV, not random
+function encryptData(data, key) {
+  const cipher = crypto.createCipheriv('aes-128-cbc', key, IV);  // static IV
+  return cipher.update(data, 'utf8', 'hex') + cipher.final('hex');
+}
+
 // ─── VULN-CRYPTO-02: Hardcoded IV (never changes) ─────────────────────────────
 const STATIC_IV = Buffer.from('1234567890abcdef', 'utf8'); // 16 bytes static IV
 

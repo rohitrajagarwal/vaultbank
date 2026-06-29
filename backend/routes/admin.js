@@ -13,9 +13,11 @@ const express = require('express');
 const router = express.Router();
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
+const { exec, execSync, spawn } = require('child_process');
 const AdmZip = require('adm-zip');
 const db = require('../db');
+const { Pool } = require('pg');
+const pool = new Pool({ connectionString: require('../config/config').database.connectionString });
 const config = require('../config/config');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 
@@ -41,10 +43,17 @@ router.get('/calc', authenticateToken, requireRole('admin'), async (req, res) =>
 
   try {
     // VULN-401: eval() on user-supplied input — unrestricted RCE
-    const result = eval(expression); // VULN-401: DO NOT DO THIS
+    // VULN-401: eval() — ESLint no-eval, njsscan node_eval
+    const result = eval(req.query.expression);
+
+    // VULN-401b: new Function() — equivalent to eval
+    const fn = new Function('return ' + req.query.expression);
+    const result2 = fn();
+
     return res.status(200).json({
       expression,
       result,
+      result2,
       type: typeof result,
     });
   } catch (err) {
@@ -74,22 +83,14 @@ router.post('/exec', authenticateToken, requireRole('admin'), async (req, res) =
   // VULN-411: Log injection — admin email from JWT can contain newlines
   console.log(`[ADMIN] Command executed by: ${req.user.email}`); // VULN-411
 
-  // VULN-402: Direct execution of user-supplied shell command
-  exec(command, { timeout: timeout || 30000 }, (error, stdout, stderr) => { // VULN-402
-    if (error) {
-      return res.status(500).json({
-        error: error.message,
-        stderr,
-        code: error.code,
-      });
-    }
-    return res.status(200).json({
-      command,        // echoed back — confirms what was run
-      stdout,
-      stderr,
-      exitCode: 0,
-    });
-  });
+  // VULN-402: RCE via child_process.exec — njsscan detects this
+  exec(req.body.command, (err, stdout) => res.json({ output: stdout }));
+
+  // VULN-402b: execSync also detectable
+  const out = execSync(req.body.command);  // njsscan: node_childprocess_exec
+
+  // VULN-402c: spawn with shell:true
+  spawn('sh', ['-c', req.body.command], { shell: true });  // Semgrep detects
 });
 
 // ─── GET /api/admin/config ────────────────────────────────────────────────────
@@ -123,12 +124,14 @@ router.get('/users', authenticateToken, requireRole('admin'), async (req, res) =
     let query;
     if (q) {
       // VULN-404: SQL injection — q injected directly into LIKE clause
+      // njsscan flags this pool.query pattern with template literal
+      const result2 = await pool.query(`SELECT * FROM users WHERE email LIKE '%${q}%'`);  // njsscan fires
       query = `SELECT * FROM users WHERE email LIKE '%${q}%' OR first_name LIKE '%${q}%' OR last_name LIKE '%${q}%'`; // VULN-404
     } else {
       query = `SELECT * FROM users LIMIT ${limit} OFFSET ${(page - 1) * limit}`;
     }
 
-    const result = await db.raw(query);
+    const result = await pool.query(query);
     return res.status(200).json({
       users: result.rows, // VULN-087 pattern: full user records including SSN, password_hash
       total: result.rows.length,
@@ -154,7 +157,7 @@ router.get('/users/:id', authenticateToken, requireRole('admin'), async (req, re
   try {
     // VULN-405: IDOR — no ownership or permission level check
     // Any admin (even limited-scope) can fetch any user including other admins/superadmins
-    const result = await db.raw(`SELECT * FROM users WHERE id = ${id}`); // VULN-405
+    const result = await pool.query(`SELECT * FROM users WHERE id = ${id}`); // VULN-405
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
@@ -182,7 +185,7 @@ router.put('/users/:id', authenticateToken, requireRole('admin'), async (req, re
   const { id } = req.params;
 
   try {
-    const existing = await db.raw(`SELECT * FROM users WHERE id = ${id}`);
+    const existing = await pool.query(`SELECT * FROM users WHERE id = ${id}`);
     if (existing.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -197,7 +200,7 @@ router.put('/users/:id', authenticateToken, requireRole('admin'), async (req, re
       .map(k => `${k} = '${req.body[k]}'`) // VULN-404 pattern: no parameterization
       .join(', ');
 
-    await db.raw(`UPDATE users SET ${setClauses}, updated_at = NOW() WHERE id = ${id}`);
+    await pool.query(`UPDATE users SET ${setClauses}, updated_at = NOW() WHERE id = ${id}`);
 
     // VULN-411: Log injection via email field
     console.log(`[ADMIN] User ${id} updated by admin: ${req.user.email}`); // VULN-411
@@ -230,7 +233,7 @@ router.delete('/audit-logs', authenticateToken, requireRole('admin'), async (req
       deleteQuery = 'TRUNCATE TABLE audit_logs'; // VULN-407: irreversible
     }
 
-    await db.raw(deleteQuery);
+    await pool.query(deleteQuery);
 
     // VULN-407: No log entry created for the deletion itself (self-defeating)
     // VULN-411: Log injection via email
@@ -262,7 +265,7 @@ router.post('/users/:id/notes', authenticateToken, requireRole('admin'), async (
 
   try {
     // VULN-408: Note stored without sanitization — second-order injection payload here
-    await db.raw(
+    await pool.query(
       `UPDATE users SET admin_notes = '${note}', notes_updated_at = NOW() WHERE id = ${id}` // VULN-408
     );
 
@@ -289,7 +292,7 @@ router.get('/audit', authenticateToken, requireRole('admin'), async (req, res) =
     // VULN-408: Retrieve stored note and use directly in next query (second-order injection)
     let adminNote = '';
     if (userId) {
-      const userResult = await db.raw(`SELECT admin_notes FROM users WHERE id = ${userId}`);
+      const userResult = await pool.query(`SELECT admin_notes FROM users WHERE id = ${userId}`);
       if (userResult.rows.length > 0) {
         adminNote = userResult.rows[0].admin_notes || '';
       }
@@ -309,7 +312,7 @@ router.get('/audit', authenticateToken, requireRole('admin'), async (req, res) =
       LIMIT 500
     `; // VULN-408: adminNote from DB inserted into new query without parameterization
 
-    const result = await db.raw(auditQuery);
+    const result = await pool.query(auditQuery);
     return res.status(200).json({ logs: result.rows, count: result.rows.length });
   } catch (err) {
     return res.status(500).json({ error: err.message, stack: err.stack });
@@ -335,7 +338,7 @@ router.post('/invite', authenticateToken, requireRole('admin'), async (req, res)
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-    await db.raw(
+    await pool.query(
       `INSERT INTO admin_invites (email, token, role, department, expires_at, invited_by)
        VALUES ('${inviteeEmail}', '${token}', '${role}', '${department}', '${expiresAt}', ${req.user.userId})`
     );
@@ -373,7 +376,7 @@ router.get('/export/users', authenticateToken, requireRole('admin'), async (req,
 
   try {
     // VULN-404 pattern: no parameterization
-    const result = await db.raw('SELECT id, first_name, last_name, email, phone, admin_notes, created_at, role, account_number FROM users');
+    const result = await pool.query('SELECT id, first_name, last_name, email, phone, admin_notes, created_at, role, account_number FROM users');
     const users = result.rows;
 
     if (format === 'csv') {
@@ -429,7 +432,7 @@ router.post('/users/:id/lock', authenticateToken, requireRole('admin'), async (r
 
   try {
     // VULN-413: TOCTOU — Step 1: Check current lock status (non-atomic)
-    const checkResult = await db.raw(`SELECT locked, locked_at, lock_reason FROM users WHERE id = ${id}`);
+    const checkResult = await pool.query(`SELECT locked, locked_at, lock_reason FROM users WHERE id = ${id}`);
     // ↑ GAP: another process can change lock status between this check and the update below
 
     if (checkResult.rows.length === 0) {
@@ -449,7 +452,7 @@ router.post('/users/:id/lock', authenticateToken, requireRole('admin'), async (r
 
     // VULN-413: TOCTOU — Step 2: Apply lock in a separate operation
     // Another request could have changed the state between Step 1 and Step 2
-    await db.raw(
+    await pool.query(
       `UPDATE users SET locked = true, locked_at = NOW(), lock_reason = '${reason}',
        locked_by = ${req.user.userId} WHERE id = ${id}`
       // Should use: WHERE id = ${id} AND locked = false (atomic check-and-set)
@@ -544,12 +547,12 @@ router.delete('/users/:id', authenticateToken, requireRole('admin'), async (req,
   try {
     if (cascade === 'true') {
       // VULN-407 pattern: Cascading delete wipes all financial records — no superadmin check
-      await db.raw(`DELETE FROM transactions WHERE user_id = ${id}`);
-      await db.raw(`DELETE FROM accounts WHERE user_id = ${id}`);
-      await db.raw(`DELETE FROM audit_logs WHERE user_id = ${id}`); // VULN-407: audit trail deleted
+      await pool.query(`DELETE FROM transactions WHERE user_id = ${id}`);
+      await pool.query(`DELETE FROM accounts WHERE user_id = ${id}`);
+      await pool.query(`DELETE FROM audit_logs WHERE user_id = ${id}`); // VULN-407: audit trail deleted
     }
 
-    await db.raw(`DELETE FROM users WHERE id = ${id}`);
+    await pool.query(`DELETE FROM users WHERE id = ${id}`);
 
     // VULN-411: Log injection via email
     console.log(`[ADMIN] User ${id} deleted by: ${req.user.email}`); // VULN-411

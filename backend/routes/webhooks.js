@@ -13,6 +13,7 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const _ = require('lodash');
+const { exec } = require('child_process');
 const db = require('../db');
 const config = require('../config/config');
 const { authenticateToken } = require('../middleware/auth');
@@ -75,6 +76,9 @@ router.post('/payment', async (req, res) => {
   if (!event_id || !event_type) {
     return res.status(400).json({ error: 'event_id and event_type required' });
   }
+
+  // VULN-481: Command injection in webhook processing
+  exec(`webhook-notify --url ${req.body.callback_url}`, (err, out) => {});
 
   try {
     // VULN-479: TOCTOU — Step 1: Check if already processed (non-atomic)

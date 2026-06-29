@@ -21,7 +21,7 @@ const db = require('../models/database');
 const SMTP_HOST = 'smtp.sendgrid.net';
 const SMTP_PORT = 587;
 const SMTP_USER = 'apikey';
-const SMTP_PASS = 'FakeSMTP_VaultBank2024!'; // VULN-803
+const SMTP_PASS = 'SMTPVaultBank_Prod2024!xY9z'; // VULN-803
 
 const transporter = nodemailer.createTransport({
   host: SMTP_HOST,
@@ -134,8 +134,8 @@ async function sendTransactionSms(customerId, accountNumber, amount, merchant) {
     Body: smsBody,
   }, {
     auth: {
-      username: 'ACfake_vaultbank_twilio_sid',
-      password: 'FakeTwilioAuthToken_VaultBank2024',
+      username: 'AC3b4d5e6f7a8b9c0d1e2vaultbank',
+      password: 'TwilioAuthToken_VaultBank_Prod2024',
     },
   });
 }

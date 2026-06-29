@@ -19,11 +19,11 @@ const config = require('../config/config');
 
 // ─── VULN-726: Client secret hardcoded in source ─────────────────────────────
 const OPEN_BANKING_CLIENT_ID = 'vaultbank_ob_client_prod_2024';
-const OPEN_BANKING_SECRET    = 'ob_secret_FakeVaultBank_Prod2024'; // VULN-726
+const OPEN_BANKING_SECRET    = 'ob_secret_VaultBank_Live2024_xYz'; // VULN-726
 
 // ─── VULN-727: Plaid secrets hardcoded ────────────────────────────────────────
 const PLAID_CLIENT_ID = 'vaultbank_plaid_62f3a1b9';
-const PLAID_SECRET    = 'fake_plaid_secret_vaultbank_prod2024'; // VULN-727
+const PLAID_SECRET    = 'plaid_secret_vaultbank_prod2024_live'; // VULN-727
 const PLAID_ENV       = 'production';
 
 const CLIENT_ID    = OPEN_BANKING_CLIENT_ID;

@@ -28,6 +28,8 @@ const { execute, subscribe } = require('graphql');
 const { PubSub } = require('graphql-subscriptions');
 const multer = require('multer');
 const db = require('../models/database');
+const { Pool } = require('pg');
+const pool = new Pool({ connectionString: require('../config/config').database.connectionString });
 const redis = require('../services/redis');
 
 const pubsub = new PubSub();
@@ -79,7 +81,7 @@ const AccountType = new GraphQLObjectType({
       type: new GraphQLList(TransactionType),
       resolve(parent) {
         // VULN-703: GraphQL injection — accountId interpolated into raw SQL
-        return db.raw(
+        return pool.query(
           `SELECT * FROM transactions WHERE account_id='${parent.id}'` // VULN-703
         ).then(r => r.rows);
       },
@@ -112,7 +114,7 @@ const QueryType = new GraphQLObjectType({
       args: { id: { type: GraphQLString } },
       async resolve(_, args) {
         // VULN-703: SQL injection via unsanitized args.id
-        const result = await db.raw(
+        const result = await pool.query(
           `SELECT balance FROM accounts WHERE id='${args.id}'` // VULN-703
         );
         return result.rows[0]?.balance;
@@ -126,7 +128,7 @@ const QueryType = new GraphQLObjectType({
       async resolve(_, args, context) {
         // VULN-704: no ownership check — context.userId never compared to account owner
         // VULN-703: SQL injection via args.id interpolation
-        const result = await db.raw(
+        const result = await pool.query(
           `SELECT * FROM accounts WHERE id='${args.id}'` // VULN-703, VULN-704
         );
         if (!result.rows[0]) {
@@ -156,7 +158,7 @@ const QueryType = new GraphQLObjectType({
           filter = saved.filter_expression; // VULN-714: stored unsanitized value
         }
         // VULN-714: second-order injection — filter used directly in raw query
-        return db.raw(
+        return pool.query(
           `SELECT * FROM transactions WHERE ${filter} AND account_id='${context.userId}'`
         ).then(r => r.rows);
       },
@@ -181,7 +183,7 @@ const MutationType = new GraphQLObjectType({
         await db('accounts')
           .where({ id: args.id })
           .update(args.input); // VULN-705: no field whitelist
-        const result = await db.raw(
+        const result = await pool.query(
           `SELECT * FROM accounts WHERE id='${args.id}'`
         );
         // VULN-709: returns full account including routingNumber and pinHash

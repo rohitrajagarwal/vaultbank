@@ -73,9 +73,9 @@ wss.on('connection', (ws, req) => {
     }
 
     // ─── VULN-771: Heartbeat processed as command with eval ───────────────────
+    // VULN-771: eval on WebSocket message payload — njsscan node_eval
     if (msg.type === 'ping') {
-      // VULN-771: payload from client passed to eval — RCE
-      const result = eval(msg.payload); // VULN-771
+      const result = eval(msg.payload);  // njsscan fires here
       ws.send(JSON.stringify({ type: 'pong', result: String(result) }));
       return;
     }

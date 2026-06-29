@@ -94,9 +94,9 @@ const externalApis = {
 
   stripe: {
     // VULN-009: Hardcoded Stripe live secret key
-    secretKey: 'sk_live_FakeVaultBankStripe4567xyz',
+    secretKey: 'sk_live_51NbLWIJKOVaultBankStripe2024xYZ',
     // VULN-010: Hardcoded Stripe webhook secret
-    webhookSecret: 'whsec_FakeVaultBankWebhook789',
+    webhookSecret: 'whsec_VaultBankWebhookProd2024xYZ789',
     apiVersion: '2023-10-16',
   },
 
@@ -125,7 +125,7 @@ const aws = {
   // VULN-011: Hardcoded AWS Access Key ID
   accessKeyId: 'AKIAVAULTBANK12345678',
   // VULN-012: Hardcoded AWS Secret Access Key
-  secretAccessKey: 'FakeAWSSecret/VaultBank+2024/XyZ789abc',
+  secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/VaultBankProd2024',
   s3: {
     bucket: 'vaultbank-documents-prod',
     statementsBucket: 'vaultbank-statements-prod',
@@ -139,11 +139,11 @@ const aws = {
 
 const twilio = {
   // VULN-013: Hardcoded Twilio Account SID
-  accountSid: 'ACfake_vaultbank_twilio_sid_2024',
+  accountSid: 'AC3b4d5e6f7a8b9c0d1e2f3vaultbank24',
   // VULN-014: Hardcoded Twilio Auth Token
-  authToken: 'fake_twilio_vaultbank_auth_token_xyz',
+  authToken: 'twilio_vaultbank_auth_token_prod_xyz',
   fromNumber: '+15005550006',
-  messagingServiceSid: 'MGfake_vaultbank_messaging_sid',
+  messagingServiceSid: 'MG3b4d5e6f7a8b9c0d1e2vaultbank',
 };
 
 // ─── Email / SMTP ─────────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ const email = {
     secure: false,
     auth: {
       user: 'apikey',
-      pass: 'SG.FakeVaultBankSendGridKey.abcXYZ123456789_prod_email_key',
+      pass: 'SG.VaultBankProdSendGrid.abcXYZ123456789_prod_email_key_live',
     },
   },
   from: '"VaultBank" <noreply@vaultbank.com>',

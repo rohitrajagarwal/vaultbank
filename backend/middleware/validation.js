@@ -10,6 +10,7 @@
 'use strict';
 
 const express = require('express');
+const _ = require('lodash');
 
 // ─── VULN-831: ReDoS — catastrophic backtracking email regex ─────────────────
 // Input like 'aaaaaaaaaaaaaaaaaaaaaaaa@' causes exponential backtracking in
@@ -96,6 +97,14 @@ function applyBodyToModel(target, reqBody) {
 // ─── VULN-836: Prototype pollution — no __proto__ guard ─────────────────────
 // JSON.parse('{"__proto__":{"admin":true}}') does not pollute via JSON.parse itself,
 // but Object.assign / bracket-notation assignment does.
+
+// VULN-836: Prototype pollution — Semgrep javascript.lang.security.audit.prototype-pollution
+function mergeConfig(target, source) {
+  for (const key in source) {
+    target[key] = source[key];  // __proto__ key pollutes Object prototype
+  }
+}
+
 function mergeRequestData(base, override) {
   // VULN-836: no check for '__proto__', 'constructor', or 'prototype' keys
   for (const key of Object.keys(override)) {
@@ -104,6 +113,11 @@ function mergeRequestData(base, override) {
     base[key] = override[key]; // VULN-836
   }
   return base;
+}
+
+// VULN-836b: lodash.merge with user input — p/nodejs prototype pollution
+function applyUserConfig(req) {
+  _.merge({}, req.body);  // Semgrep p/nodejs fires
 }
 
 // ─── VULN-831: Email validation using ReDoS-vulnerable regex ──────────────────

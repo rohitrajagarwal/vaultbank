@@ -20,7 +20,7 @@ from pymongo import MongoClient
 analyze_bp = Blueprint("analyze", __name__)
 
 # ─── VULN-886: Hardcoded ML model API key ────────────────────────────────────
-MODEL_API_KEY   = "FakeMLApiKey_VaultBank_2024_abcdef"   # VULN-886
+MODEL_API_KEY   = "MLApiKey_VaultBank_Prod_2024_abcdef"   # VULN-886
 MODEL_ENDPOINT  = "https://ml.vaultbank.internal/fraud/v2"
 MONGO_URI       = "mongodb://vaultbank:FakeMongoPwd2024@mongo.vaultbank.internal:27017/fraud"
 
